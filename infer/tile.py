@@ -156,14 +156,10 @@ class InferManager(base.InferManager):
         assert self.mem_usage < 1.0 and self.mem_usage > 0.0
 
         # * depend on the number of samples and their size, this may be less efficient
-        patterning = lambda x: re.sub("([\[\]])", "[\\1]", x)
-        file_path_list = glob.glob(patterning("%s/*" % self.input_dir))
+        file_path_list = [os.path.join(self.input_dir, s) for s in os.listdir(self.input_dir)]
         file_path_list.sort()  # ensure same order
         assert len(file_path_list) > 0, 'Not Detected Any Files From Path'
         
-        rm_n_mkdir(self.output_dir + '/json/')
-        rm_n_mkdir(self.output_dir + '/mat/')
-        rm_n_mkdir(self.output_dir + '/overlay/')
         if self.save_qupath:
             rm_n_mkdir(self.output_dir + "/qupath/")
 
@@ -175,41 +171,7 @@ class InferManager(base.InferManager):
             """
             img_name, pred_map, pred_inst, inst_info_dict, overlaid_img = results
 
-            nuc_val_list = list(inst_info_dict.values())
-            # need singleton to make matlab happy
-            nuc_uid_list = np.array(list(inst_info_dict.keys()))[:,None]
-            nuc_type_list = np.array([v["type"] for v in nuc_val_list])[:,None]
-            nuc_coms_list = np.array([v["centroid"] for v in nuc_val_list])
-
-            mat_dict = {
-                "inst_map" : pred_inst,
-                "inst_uid" : nuc_uid_list,
-                "inst_type": nuc_type_list,
-                "inst_centroid": nuc_coms_list
-            }
-            if self.nr_types is None: # matlab does not have None type array
-                mat_dict.pop("inst_type", None) 
-
-            if self.save_raw_map:
-                mat_dict["raw_map"] = pred_map
-            save_path = "%s/mat/%s.mat" % (self.output_dir, img_name)
-            sio.savemat(save_path, mat_dict)
-
-            save_path = "%s/overlay/%s.png" % (self.output_dir, img_name)
-            cv2.imwrite(save_path, cv2.cvtColor(overlaid_img, cv2.COLOR_RGB2BGR))
-
-            if self.save_qupath:
-                nuc_val_list = list(inst_info_dict.values())
-                nuc_type_list = np.array([v["type"] for v in nuc_val_list])
-                nuc_coms_list = np.array([v["centroid"] for v in nuc_val_list])
-                save_path = "%s/qupath/%s.tsv" % (self.output_dir, img_name)
-                convert_format.to_qupath(
-                    save_path, nuc_coms_list, nuc_type_list, self.type_info_dict
-                )
-
-            save_path = "%s/json/%s.json" % (self.output_dir, img_name)
-            self.__save_json(save_path, inst_info_dict, None)
-            return img_name
+            return inst_info_dict
 
         def detach_items_of_uid(items_list, uid, nr_expected_items):
             item_counter = 0
@@ -251,11 +213,10 @@ class InferManager(base.InferManager):
             cache_image_list = []
             cache_patch_info_list = []
             cache_image_info_list = []
-            while len(file_path_list) > 0:
-                file_path = file_path_list.pop(0)
-
-                img = cv2.imread(file_path)
-                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            file_path = file_path_list.pop(0)
+            np_arrays = np.load(file_path)
+            saved_file_path = file_path.split('/')[-1].split('.')[0]
+            for img in np_arrays:
                 src_shape = img.shape
 
                 img, patch_info, top_corner = _prepare_patching(
@@ -368,6 +329,7 @@ class InferManager(base.InferManager):
                     proc_output = _post_process_patches(*func_args)
                     proc_callback(proc_output)
 
+            nuclei = []
             if proc_pool is not None:
                 # loop over all to check state a.k.a polling
                 for future in as_completed(future_list):
@@ -382,7 +344,17 @@ class InferManager(base.InferManager):
                         #     future.cancel()
                         # break
                     else:
-                        file_path = proc_callback(future.result())
-                        log_info("Done Assembling %s" % file_path)
+                        nuclei.append(proc_callback(future.result()))
+            
+            """
+            json_path = os.path.join(self.output_dir, file_path + '.json')
+            with open(json_path, 'w') as f:
+                json.dump(nuclei, f)
+            """
+            pickle_path = os.path.join(self.output_dir, saved_file_path + '.pickle')
+            with open(pickle_path, 'wb') as f:
+                pickle.dump(nuclei, f)
+
+            log_info("Done Assembling %s" % pickle_path)
         return
 
